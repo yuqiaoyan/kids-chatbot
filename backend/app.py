@@ -6,14 +6,22 @@ import logging
 import json
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from functools import wraps
-import uuid
 from llm_provider import llm_provider
 # REMOVED: generate_prompt import no longer needed (PromptManager handles all prompt logic)
 from vocabulary_manager import vocabulary_manager
 from prompt_manager import prompt_manager
 from content_manager import content_manager
+from services import (
+    extract_vocabulary_from_content,
+    get_all_topic_vocabulary,
+    log_vocabulary_debug_info,
+    manage_content_ids,
+    manage_session_lifecycle,
+    select_advanced_general_words,
+    select_best_vocabulary_word,
+)
 from telemetry import (
     collect_educational_data,
     determine_story_exchange_type,
@@ -61,77 +69,7 @@ from models.schemas import (
 
 # === SESSION LIFECYCLE MANAGEMENT ===
 
-def manage_session_lifecycle(session_data: 'SessionData', current_time: datetime) -> None:
-    """
-    Manage session lifecycle with 30-minute timeout
-    
-    Args:
-        session_data: Current session state
-        current_time: Current timestamp for timeout calculations
-    """
-    # Initialize new session
-    if not session_data.session_id:
-        session_data.session_id = str(uuid.uuid4())
-        session_data.session_start = current_time
-        session_data.turn_id = 1  # Start at 1, not 0
-        session_data.last_activity = current_time
-        logging.info(f"🆔 NEW SESSION: Created session {session_data.session_id[:8]}... at {current_time}")
-    else:
-        # Check for session timeout (30 minutes)
-        if session_data.last_activity:
-            inactive_duration = current_time - session_data.last_activity
-            if inactive_duration > timedelta(minutes=30):
-                # Start new session
-                old_session_id = session_data.session_id[:8] if session_data.session_id else "unknown"
-                session_data.session_id = str(uuid.uuid4())
-                session_data.session_start = current_time
-                session_data.turn_id = 1  # Reset to 1, not 0
-                # Reset story/funfact tracking
-                session_data.current_story_id = None
-                session_data.current_funfact_id = None
-                session_data.story_history = []
-                session_data.funfact_history = []
-                logging.info(f"⏰ SESSION TIMEOUT: Started new session {session_data.session_id[:8]}... (previous: {old_session_id}...)")
-            else:
-                # Increment turn for continuing session (no timeout)
-                session_data.turn_id += 1
-        else:
-            # First interaction with this session_id, set session_start
-            session_data.session_start = current_time
-            session_data.turn_id += 1
-    
-    # Update activity timestamp
-    session_data.last_activity = current_time
-
-def manage_content_ids(session_data: 'SessionData', mode: str) -> None:
-    """
-    Automatically manage story and funfact IDs based on interaction type
-    
-    Args:
-        session_data: Current session state
-        mode: "storywriting" or "funfacts"
-    """
-    if mode == "storywriting":
-        # Story-related interactions
-        if not session_data.current_story_id:
-            session_data.current_story_id = str(uuid.uuid4())
-            session_data.story_history.append(session_data.current_story_id)
-            logging.info(f"📖 NEW STORY: Created story ID {session_data.current_story_id[:8]}... in session {session_data.session_id[:8] if session_data.session_id else 'unknown'}...")
-        # Clear funfact_id if switching from facts to story
-        if session_data.current_funfact_id:
-            session_data.current_funfact_id = None
-            logging.info("🔄 MODE SWITCH: Cleared funfact ID (switched to story)")
-            
-    elif mode == "funfacts":
-        # Fun facts interactions
-        if not session_data.current_funfact_id:
-            session_data.current_funfact_id = str(uuid.uuid4())
-            session_data.funfact_history.append(session_data.current_funfact_id)
-            logging.info(f"🔍 NEW FUNFACTS: Created funfact ID {session_data.current_funfact_id[:8]}... in session {session_data.session_id[:8] if session_data.session_id else 'unknown'}...")
-        # Clear story_id if switching from story to facts
-        if session_data.current_story_id:
-            session_data.current_story_id = None
-            logging.info("🔄 MODE SWITCH: Cleared story ID (switched to funfacts)")
+# Session lifecycle helpers now live in services.session_service
 
 def capture_story_assessment(assessment_response: str) -> dict:
     """
@@ -208,195 +146,6 @@ THEME_CONFIG = load_theme_config()
 # - generate_structured_story_prompt() -> prompt_manager.get_story_opening_prompt()
 #
 # All prompt logic now centralized in prompt_manager.py with self-documenting method names
-
-
-def select_advanced_general_words(count: int = 20, exclude: List[str] = None) -> List[str]:
-    """
-    Select tier 2+3 words from the expanded 100-word general vocabulary pool
-    
-    Args:
-        count: Number of words to select (default 20)
-        exclude: Words to avoid selecting (prefer fresh options)
-    
-    Returns:
-        List of tier 2+3 general vocabulary words
-    """
-    if exclude is None:
-        exclude = []
-    
-    # Get all tier 2 and tier 3 words from general pool
-    general_vocabulary = vocabulary_manager.general_vocabulary
-    advanced_words = [word for word in general_vocabulary 
-                     if word['difficulty'] in [2, 3]]  # Tier 2+3 only
-    
-    # Prefer words not recently used
-    preferred_words = [word for word in advanced_words 
-                      if word['word'] not in exclude]
-    
-    # If we have enough preferred words, use them; otherwise include some used words
-    if len(preferred_words) >= count:
-        selected_words = preferred_words[:count]
-    else:
-        # Use all preferred words + some used words to reach target count
-        additional_needed = count - len(preferred_words)
-        used_words = [word for word in advanced_words 
-                     if word['word'] in exclude]
-        selected_words = preferred_words + used_words[:additional_needed]
-    
-    # Return just the word strings
-    return [word['word'] for word in selected_words[:count]]
-
-
-def get_all_topic_vocabulary(topic: str) -> List[str]:
-    """
-    Get all available vocabulary words for a specific topic
-    
-    Args:
-        topic: The topic name (space, animals, sports, etc.)
-    
-    Returns:
-        List of all topic-specific vocabulary words
-    """
-    # Get topic vocabulary from vocabulary manager
-    topic_vocabulary = vocabulary_manager.get_vocabulary_for_topic(topic)
-    
-    # Filter to get only topic-specific words (not general words)
-    topic_lower = topic.lower()
-    if topic_lower in vocabulary_manager.topic_vocabularies:
-        topic_words = vocabulary_manager.topic_vocabularies[topic_lower]
-        return [word['word'] for word in topic_words]
-    
-    # Fallback: return empty list if no topic-specific vocabulary
-    return []
-
-def extract_vocabulary_from_content(content: str, content_vocabulary: List[str] = None) -> List[str]:
-    """
-    Extract vocabulary words from generated content, prioritizing bolded words
-    
-    Args:
-        content: The generated content text
-        content_vocabulary: List of vocabulary words that were intended to be used
-    
-    Returns:
-        List of vocabulary words found in the content
-    """
-    if content_vocabulary is None:
-        content_vocabulary = []
-    
-    # Extract words that are bolded with **word** format
-    import re
-    bolded_words = re.findall(r'\*\*(.*?)\*\*', content)
-    
-    # Clean up the bolded words (remove extra spaces, preserve original casing)
-    extracted_words = []
-    for word in bolded_words:
-        clean_word = word.strip()  # Keep original casing for proper noun detection
-        if clean_word and len(clean_word) > 1:  # Avoid single characters or empty strings
-            extracted_words.append(clean_word)
-    
-    # Prioritize words that were in our intended vocabulary
-    context_words = []
-    for word in extracted_words:
-        # Check if this extracted word matches any of our intended vocabulary
-        for vocab_word in content_vocabulary:
-            if vocab_word.lower() == word or vocab_word.lower() in word:
-                context_words.append(vocab_word)
-                break
-        else:
-            # If no match found in intended vocabulary, add the extracted word directly
-            context_words.append(word)
-    
-    # Remove duplicates while preserving order
-    seen = set()
-    unique_words = []
-    for word in context_words:
-        if word.lower() not in seen:
-            seen.add(word.lower())
-            unique_words.append(word)
-    
-    logger.info(f"Extracted vocabulary from content: {unique_words}")
-    return unique_words
-
-def log_vocabulary_debug_info(topic: str, used_words: List[str], content: str, context: str, session_total: int):
-    """
-    Log vocabulary debug information to server logs
-    
-    Args:
-        topic: Topic for generating vocabulary pools
-        used_words: Previously used words for exclusion
-        content: The LLM response content
-        context: Context description (e.g., "Story generation", "Fun fact")
-        session_total: Total vocabulary words tracked in session
-    """
-    import re
-    
-    # Generate vocabulary pools for debug info
-    vocab_pools = prompt_manager.generate_massive_vocabulary_pool(topic, used_words)
-    bolded_words = re.findall(r'\*\*(.*?)\*\*', content)
-    
-    debug_info = {
-        'general_pool': vocab_pools.get('general_pool', []),
-        'topic_pool': vocab_pools.get('topic_pool', []),
-        'excluded_words': vocab_pools.get('excluded_words', []),
-        'total_available': vocab_pools.get('total_examples', 0),
-        'llm_selected_words': bolded_words,
-        'context': context,
-        'content_preview': content[:100] + ('...' if len(content) > 100 else ''),
-        'session_total': session_total
-    }
-    
-    logging.info(f"🔍 DEBUG: Created {context.lower()} vocab debug info: {debug_info}")
-
-def select_best_vocabulary_word(available_words: List[str]) -> str:
-    """
-    Select the best vocabulary word, filtering out multi-word proper nouns (like names)
-    while preserving single words that could be legitimate vocabulary.
-    
-    IMPORTANT: This function should only be called ONCE per vocabulary question generation.
-    The selected word should be passed to llm_provider.generate_vocabulary_question() 
-    and used as-is without re-selection to prevent vocabulary repetition bugs.
-    
-    Args:
-        available_words: List of available vocabulary words to choose from (already filtered 
-                        to exclude words in session_data.askedVocabWords)
-    
-    Returns:
-        The best vocabulary word (multi-word proper nouns filtered out)
-    """
-    if not available_words:
-        logger.info("select_best_vocabulary_word: No available words")
-        return None
-    
-    logger.info(f"select_best_vocabulary_word: Available words: {available_words}")
-    
-    # Filter out multi-word phrases (likely proper nouns like names)
-    single_word_candidates = []
-    for word in available_words:
-        if word and len(word.split()) == 1:  # Only single words
-            single_word_candidates.append(word)
-        else:
-            logger.info(f"select_best_vocabulary_word: Skipping multi-word: '{word}'")
-    
-    logger.info(f"select_best_vocabulary_word: Single word candidates: {single_word_candidates}")
-    
-    # Prioritize lowercase words (more likely to be vocabulary) over proper nouns
-    if single_word_candidates:
-        # First try to find lowercase words (common vocabulary)
-        lowercase_candidates = [word for word in single_word_candidates if word.islower()]
-        if lowercase_candidates:
-            selected = lowercase_candidates[0]
-            logger.info(f"select_best_vocabulary_word: Selected lowercase word: '{selected}'")
-            return selected
-        
-        # Fallback to any single word if no lowercase found
-        selected = single_word_candidates[0]
-        logger.info(f"select_best_vocabulary_word: Selected (fallback): '{selected}'")
-        return selected
-    else:
-        # Last resort - return first available even if multi-word (shouldn't happen)
-        selected = available_words[0]
-        logger.warning(f"select_best_vocabulary_word: Using last resort word: '{selected}'")
-        return selected
 
 
 def parse_structured_story_response(llm_response: str) -> StructuredStoryResponse:
