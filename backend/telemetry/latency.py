@@ -8,7 +8,7 @@ from datetime import datetime
 from latency_logger import LatencyLogger
 from llm_provider import llm_call_timings
 from models.schemas import ChatResponse, SessionData
-from story_tracker import StoryLatencyTracker
+# from story_tracker import StoryLatencyTracker
 
 MAX_LOG_SIZE = 5_000_000  # 5MB rotation threshold
 
@@ -83,7 +83,7 @@ def determine_story_exchange_type(session_data: SessionData, result: ChatRespons
 
 
 latency_logger = LatencyLogger()
-story_tracker = StoryLatencyTracker()
+# story_tracker = StoryLatencyTracker()
 
 __all__ = [
     "cleanup_old_archives",
@@ -92,5 +92,5 @@ __all__ = [
     "latency_logger",
     "rotate_logs_if_needed",
     "setup_latency_logging",
-    "story_tracker",
+    # "story_tracker",
 ]
