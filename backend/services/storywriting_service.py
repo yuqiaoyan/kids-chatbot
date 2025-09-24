@@ -23,7 +23,13 @@ from .vocabulary_service import (
     log_vocabulary_debug_info,
     select_best_vocabulary_word,
 )
-from models.schemas import ChatResponse, SessionData, VocabQuestion, VocabularyPhase
+from models.schemas import (
+    ChatResponse,
+    SessionData,
+    StorywritingPhase,
+    VocabQuestion,
+    VocabularyPhase,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -42,14 +48,17 @@ async def _dispatch_story_phase(
         return vocabulary_response
 
     if _is_design_phase_active(session_data):
+        _transition_phase(session_data, StorywritingPhase.DESIGNING)
         return await handle_design_phase_interaction(user_message, session_data)
 
-    if not session_data.topic:
+    if not session_data.topic or session_data.conversationPhase == StorywritingPhase.NOT_STARTED:
         return await _handle_topic_initialization(user_message, session_data, story_mode)
 
-    if session_data.isComplete:
+    if session_data.isComplete or session_data.conversationPhase == StorywritingPhase.COMPLETED:
+        _transition_phase(session_data, StorywritingPhase.COMPLETED)
         return await _handle_completed_story_flow(user_message, session_data)
 
+    _transition_phase(session_data, StorywritingPhase.WRITING)
     return await _handle_story_continuation(user_message, session_data)
 
 
@@ -64,13 +73,39 @@ async def _handle_vocabulary_command(
 
     handler = command_map.get(user_message)
     if handler:
+        if user_message in {"start_vocabulary", "next_vocabulary"}:
+            _transition_phase(session_data, StorywritingPhase.VOCABULARY)
         return await handler(session_data)
 
     return None
 
 
 def _is_design_phase_active(session_data: SessionData) -> bool:
+    phase_value = getattr(session_data, "conversationPhase", StorywritingPhase.NOT_STARTED)
+    if isinstance(phase_value, str):
+        try:
+            phase = StorywritingPhase(phase_value)
+        except ValueError:
+            phase = StorywritingPhase.NOT_STARTED
+    else:
+        phase = phase_value or StorywritingPhase.NOT_STARTED
+
+    if phase == StorywritingPhase.DESIGNING:
+        return not session_data.designComplete
+
     return bool(session_data.designPhase and not session_data.designComplete)
+
+
+def _transition_phase(session_data: SessionData, new_phase: StorywritingPhase) -> None:
+    """Update the conversation phase with logging when it changes."""
+    current_phase = session_data.conversationPhase
+    if current_phase != new_phase:
+        logger.info(
+            "🔄 CONVERSATION PHASE: %s → %s",
+            current_phase,
+            new_phase,
+        )
+        session_data.conversationPhase = new_phase
 
 
 async def _handle_topic_initialization(
@@ -199,6 +234,7 @@ async def _handle_topic_initialization(
                 "✅ DESIGN PHASE: Triggering design phase with %s designable entities",
                 total_entities,
             )
+            _transition_phase(session_data, StorywritingPhase.DESIGNING)
             design_response = trigger_enhanced_design_phase(
                 session_data, structured_response
             )
@@ -207,6 +243,7 @@ async def _handle_topic_initialization(
                 "✅ DESIGN PHASE: Triggering legacy design phase with options: %s",
                 structured_response.metadata.design_options,
             )
+            _transition_phase(session_data, StorywritingPhase.DESIGNING)
             design_response = trigger_design_phase(session_data, structured_response)
 
         design_response.suggestedTheme = get_theme_suggestion(topic)
@@ -217,6 +254,7 @@ async def _handle_topic_initialization(
     )
     suggested_theme = get_theme_suggestion(topic)
 
+    _transition_phase(session_data, StorywritingPhase.WRITING)
     return ChatResponse(
         response=structured_response.story,
         sessionData=session_data,
@@ -227,6 +265,7 @@ async def _handle_topic_initialization(
 async def _handle_completed_story_flow(
     user_message: str, session_data: SessionData
 ) -> ChatResponse:
+    _transition_phase(session_data, StorywritingPhase.COMPLETED)
     message_lower = user_message.lower().strip()
 
     if session_data.awaiting_story_confirmation:
@@ -331,6 +370,7 @@ async def _handle_completed_story_flow(
                         "✅ NEW STORY DESIGN: Triggering design phase with %s designable entities",
                         total_entities,
                     )
+                    _transition_phase(session_data, StorywritingPhase.DESIGNING)
                     design_response = trigger_enhanced_design_phase(
                         session_data, enhanced_response
                     )
@@ -346,6 +386,7 @@ async def _handle_completed_story_flow(
                 logger.info(
                     "❌ NEW STORY DESIGN: Skipping design phase - no designable entities found"
                 )
+                _transition_phase(session_data, StorywritingPhase.WRITING)
                 return ChatResponse(
                     response=(
                         f"Great choice! Let's write a {potential_new_topic} story! 🌟\n\n"
@@ -385,6 +426,7 @@ async def _handle_completed_story_flow(
                     len(session_data.contentVocabulary),
                 )
 
+                _transition_phase(session_data, StorywritingPhase.WRITING)
                 return ChatResponse(
                     response=(
                         f"Great choice! Let's write a {potential_new_topic} story! 🌟\n\n"
@@ -460,6 +502,7 @@ async def _handle_completed_story_flow(
                         "✅ TOPIC SWITCH DESIGN: Triggering design phase with %s designable entities",
                         total_entities,
                     )
+                    _transition_phase(session_data, StorywritingPhase.DESIGNING)
                     design_response = trigger_enhanced_design_phase(
                         session_data, enhanced_response
                     )
@@ -472,6 +515,7 @@ async def _handle_completed_story_flow(
                 logger.info(
                     "❌ TOPIC SWITCH DESIGN: Skipping design phase - no designable entities found"
                 )
+                _transition_phase(session_data, StorywritingPhase.WRITING)
                 return ChatResponse(
                     response=enhanced_response.story,
                     sessionData=session_data,
@@ -508,6 +552,7 @@ async def _handle_completed_story_flow(
                     len(session_data.contentVocabulary),
                 )
 
+                _transition_phase(session_data, StorywritingPhase.WRITING)
                 return ChatResponse(
                     response=story_response,
                     sessionData=session_data,
@@ -523,6 +568,7 @@ async def _handle_completed_story_flow(
 async def _handle_story_continuation(
     user_message: str, session_data: SessionData
 ) -> ChatResponse:
+    _transition_phase(session_data, StorywritingPhase.WRITING)
     session_data.storyParts.append(f"User: {user_message}")
 
     grammar_feedback = llm_provider.provide_grammar_feedback(user_message)
@@ -631,6 +677,7 @@ async def _handle_story_continuation(
 
         session_data.storyParts.append(story_response)
         session_data.isComplete = True
+        _transition_phase(session_data, StorywritingPhase.COMPLETED)
 
         return ChatResponse(
             response=story_response,
@@ -734,6 +781,7 @@ async def _handle_story_continuation(
 
 
 def _reset_session_for_new_story(session_data: SessionData, new_topic: str) -> None:
+    _transition_phase(session_data, StorywritingPhase.NOT_STARTED)
     session_data.topic = new_topic
     session_data.storyParts = []
     session_data.currentStep = 2
@@ -866,7 +914,7 @@ async def handle_start_vocabulary(session_data: SessionData) -> ChatResponse:
     """Start vocabulary phase after story completion"""
     logger.info("Starting vocabulary phase")
 
-    session_data.vocabularyPhase.isActive = True
+    _transition_phase(session_data, StorywritingPhase.VOCABULARY)
     session_data.vocabularyPhase.questionsAsked = 0
     session_data.vocabularyPhase.isComplete = False
 
@@ -908,6 +956,7 @@ async def handle_next_vocabulary(session_data: SessionData) -> ChatResponse:
     """Request next vocabulary question with count validation"""
     logger.info(f"Requesting vocabulary question {session_data.vocabularyPhase.questionsAsked + 1} of {session_data.vocabularyPhase.maxQuestions}")
     
+    _transition_phase(session_data, StorywritingPhase.VOCABULARY)
     # Check if we've reached the maximum
     if session_data.vocabularyPhase.questionsAsked >= session_data.vocabularyPhase.maxQuestions:
         logger.info("Max vocabulary questions reached, finishing vocabulary phase")
@@ -951,14 +1000,14 @@ async def handle_next_vocabulary(session_data: SessionData) -> ChatResponse:
 async def handle_finish_vocabulary(session_data: SessionData) -> ChatResponse:
     """Finish vocabulary phase and ask for new story"""
     logger.info("Finishing vocabulary phase, asking for new story")
-    
+
     # Mark vocabulary phase as complete
     session_data.vocabularyPhase.isComplete = True
-    session_data.vocabularyPhase.isActive = False
     session_data.awaiting_story_confirmation = True
-    
+    _transition_phase(session_data, StorywritingPhase.COMPLETED)
+
     story_completion_prompt = prompt_manager.get_story_completion_prompt()
-    
+
     return ChatResponse(
         response=story_completion_prompt,
         sessionData=session_data

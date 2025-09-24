@@ -7,7 +7,7 @@ from datetime import datetime
 
 from latency_logger import LatencyLogger
 from llm_provider import llm_call_timings
-from models.schemas import ChatResponse, SessionData
+from models.schemas import ChatResponse, SessionData, StorywritingPhase
 # from story_tracker import StoryLatencyTracker
 
 MAX_LOG_SIZE = 5_000_000  # 5MB rotation threshold
@@ -70,13 +70,25 @@ def determine_story_exchange_type(session_data: SessionData, result: ChatRespons
     if getattr(result, "vocabQuestion", None):
         return "vocab_question"
 
-    if getattr(session_data, "designPhase", None):
+    phase_value = getattr(session_data, "conversationPhase", StorywritingPhase.NOT_STARTED)
+    if isinstance(phase_value, str):
+        try:
+            conversation_phase = StorywritingPhase(phase_value)
+        except ValueError:
+            conversation_phase = StorywritingPhase.NOT_STARTED
+    else:
+        conversation_phase = phase_value or StorywritingPhase.NOT_STARTED
+
+    if conversation_phase == StorywritingPhase.VOCABULARY:
+        return "vocab_question"
+
+    if conversation_phase == StorywritingPhase.DESIGNING:
         return "design_phase"
 
-    if getattr(session_data, "isComplete", False):
+    if conversation_phase == StorywritingPhase.COMPLETED:
         return "story_completion"
 
-    if not session_data.topic or session_data.currentStep == 0:
+    if conversation_phase == StorywritingPhase.NOT_STARTED or not session_data.topic or session_data.currentStep == 0:
         return "topic_selection"
 
     return "story_continuation"

@@ -1,7 +1,18 @@
 from datetime import datetime
+from enum import Enum
 from typing import List, Optional
 
 from pydantic import BaseModel
+
+
+class StorywritingPhase(str, Enum):
+    """High-level phases of the storywriting conversation."""
+
+    NOT_STARTED = "not_started"
+    WRITING = "writing"
+    DESIGNING = "designing"
+    COMPLETED = "completed"
+    VOCABULARY = "vocabulary"
 
 
 class StoryMetadata(BaseModel):
@@ -57,7 +68,6 @@ class DesignPrompt(BaseModel):
 
 
 class VocabularyPhase(BaseModel):
-    isActive: bool = False
     questionsAsked: int = 0
     maxQuestions: int = 3
     isComplete: bool = False
@@ -68,6 +78,7 @@ class SessionData(BaseModel):
     storyParts: List[str] = []
     currentStep: int = 0
     isComplete: bool = False
+    conversationPhase: StorywritingPhase = StorywritingPhase.NOT_STARTED
     factsShown: int = 0
     currentFact: Optional[str] = None
     allFacts: List[str] = []

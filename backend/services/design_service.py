@@ -271,7 +271,7 @@ def create_design_prompt(session_data: SessionData) -> ChatResponse:
 def should_trigger_design_phase(structured_response: StructuredStoryResponse) -> bool:
     """Determine if design phase should be triggered based on story response."""
     metadata = structured_response.metadata
-    return bool(metadata.design_options and len(metadata.design_options) > 0)
+    return bool(metadata.design_options and len(metadata.design_options) == 0)
 
 
 def trigger_design_phase(

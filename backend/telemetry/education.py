@@ -3,7 +3,12 @@ import re
 from typing import Dict, List, Optional
 
 from content_manager import content_manager
-from models.schemas import ChatResponse, SessionData, VocabQuestion
+from models.schemas import (
+    ChatResponse,
+    SessionData,
+    StorywritingPhase,
+    VocabQuestion,
+)
 
 
 def classify_interaction_module(
@@ -17,10 +22,22 @@ def classify_interaction_module(
     if getattr(response, "vocabQuestion", None):
         return "vocabulary"
 
+    phase_value = getattr(session_data, "conversationPhase", StorywritingPhase.NOT_STARTED)
+    if isinstance(phase_value, str):
+        try:
+            phase = StorywritingPhase(phase_value)
+        except ValueError:
+            phase = StorywritingPhase.NOT_STARTED
+    else:
+        phase = phase_value or StorywritingPhase.NOT_STARTED
+
     if "grammar_feedback" in llm_call_types:
         return "llm_feedback"
 
-    if getattr(session_data, "designPhase", None) and not getattr(session_data, "designComplete", False):
+    if phase == StorywritingPhase.VOCABULARY:
+        return "vocabulary"
+
+    if phase == StorywritingPhase.DESIGNING:
         return "character_design"
 
     if mode == "funfacts":
