@@ -17,6 +17,7 @@ from models.schemas import (
     SessionData,
     StoryEntities,
     StoryMetadata,
+    StorywritingPhase,
     StructuredStoryResponse,
 )
 
@@ -517,12 +518,12 @@ async def handle_design_phase_interaction(
     user_message: str, session_data: SessionData
 ) -> ChatResponse:
     """Handle user input during design phase."""
-    if not session_data.designPhase or not session_data.currentDesignAspect:
-        logging.error("handle_design_phase_interaction called without active design phase")
-        return ChatResponse(
-            response=content_manager.get_bot_response("story_mode.continue_story"),
-            sessionData=session_data,
-        )
+    # if not session_data.designPhase or not session_data.currentDesignAspect or not session_data.conversationPhase == StorywritingPhase.DESIGNING:
+    #     logging.error("handle_design_phase_interaction called without active design phase")
+    #     return ChatResponse(
+    #         response=content_manager.get_bot_response("story_mode.continue_story"),
+    #         sessionData=session_data,
+    #     )
 
     if session_data.currentDesignAspect == "naming":
         provided_name = user_message.strip()
