@@ -1,8 +1,8 @@
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional
+from typing import Dict, List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class StorywritingPhase(str, Enum):
@@ -13,18 +13,6 @@ class StorywritingPhase(str, Enum):
     DESIGNING = "designing"
     COMPLETED = "completed"
     VOCABULARY = "vocabulary"
-
-
-class StoryMetadata(BaseModel):
-    """Metadata about characters and locations introduced in the story (LEGACY)"""
-
-    character_name: Optional[str] = None
-    character_description: Optional[str] = None
-    location_name: Optional[str] = None
-    location_description: Optional[str] = None
-    design_options: List[str] = []  # ["character", "location"] or subset
-    needs_naming: bool = False  # True if entities are unnamed
-    entity_descriptor: Optional[str] = None  # e.g., "the little boy", "the mysterious village"
 
 
 class EntityLists(BaseModel):
@@ -47,13 +35,6 @@ class EnhancedStoryResponse(BaseModel):
     story: str
     entities: StoryEntities
     vocabulary_words: List[str] = []
-
-
-class StructuredStoryResponse(BaseModel):
-    """Response format for story generation with metadata (LEGACY)"""
-
-    story: str
-    metadata: StoryMetadata
 
 
 class DesignPrompt(BaseModel):
@@ -91,7 +72,6 @@ class SessionData(BaseModel):
     designPhase: Optional[str] = None  # "character", "location", or None
     currentDesignAspect: Optional[str] = None  # Current aspect being designed
     designAspectHistory: List[str] = []  # Track used aspects to ensure rotation
-    storyMetadata: Optional[StoryMetadata] = None  # Store LLM metadata about story elements (LEGACY)
     designComplete: bool = False  # Track if design phase is finished
     namingComplete: bool = False  # Track if naming phase is finished for unnamed entities
 
@@ -99,6 +79,8 @@ class SessionData(BaseModel):
     designedEntities: List[str] = []  # Track entities that have been designed
     currentEntityType: Optional[str] = None  # "character" or "location" for current entity
     currentEntityDescriptor: Optional[str] = None  # Descriptor of current entity being designed
+    currentEntityName: Optional[str] = None  # Resolved display name for the current entity
+    entityNameOverrides: Dict[str, str] = Field(default_factory=dict)  # Map descriptors to chosen names
 
     # Enhanced Story Structure Fields
     storyPhase: Optional[str] = None  # "setup", "development", "climax", "resolution"

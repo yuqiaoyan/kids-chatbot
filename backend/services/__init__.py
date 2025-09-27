@@ -1,21 +1,15 @@
 from .design_service import (
     create_design_prompt,
-    create_enhanced_design_prompt,
-    determine_entity_type_from_descriptor,
+    finalize_current_entity,
     get_next_design_aspect,
     get_next_design_entity,
     handle_design_phase_interaction,
     load_design_aspects,
-    select_design_focus,
-    should_trigger_design_phase,
-    trigger_design_phase,
+    resolve_entity_name,
     trigger_enhanced_design_phase,
     validate_entity_structure,
 )
-from .story_parser import (
-    parse_enhanced_story_response,
-    parse_structured_story_response,
-)
+from .story_parser import parse_enhanced_story_response
 from .funfacts_service import handle_funfacts
 from .session_service import manage_content_ids, manage_session_lifecycle
 from .storywriting_service import (
@@ -34,8 +28,7 @@ from .vocabulary_service import (
 
 __all__ = [
     "create_design_prompt",
-    "create_enhanced_design_prompt",
-    "determine_entity_type_from_descriptor",
+    "finalize_current_entity",
     "get_next_design_aspect",
     "get_next_design_entity",
     "extract_vocabulary_from_content",
@@ -51,12 +44,9 @@ __all__ = [
     "manage_session_lifecycle",
     "load_design_aspects",
     "parse_enhanced_story_response",
-    "parse_structured_story_response",
-    "select_design_focus",
+    "resolve_entity_name",
     "select_advanced_general_words",
     "select_best_vocabulary_word",
-    "should_trigger_design_phase",
-    "trigger_design_phase",
     "trigger_enhanced_design_phase",
     "validate_entity_structure",
 ]

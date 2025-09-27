@@ -14,12 +14,10 @@ from vocabulary_manager import vocabulary_manager
 
 from .design_service import (
     handle_design_phase_interaction,
-    should_trigger_design_phase,
-    trigger_design_phase,
     trigger_enhanced_design_phase,
     validate_entity_structure,
 )
-from .story_parser import parse_enhanced_story_response, parse_structured_story_response
+from .story_parser import parse_enhanced_story_response
 from .vocabulary_service import (
     extract_vocabulary_from_content,
     log_vocabulary_debug_info,
@@ -27,7 +25,9 @@ from .vocabulary_service import (
 )
 from models.schemas import (
     ChatResponse,
+    EnhancedStoryResponse,
     SessionData,
+    StoryEntities,
     StorywritingPhase,
     VocabQuestion,
     VocabularyPhase,
@@ -74,16 +74,15 @@ class PromptOutcome:
 @dataclass
 class StoryParseResult:
     story: str
-    structured: object
+    structured: EnhancedStoryResponse
     vocabulary_words: List[str]
-    used_enhanced_parser: bool
+    had_parse_error: bool = False
 
 
 @dataclass
 class DesignDecision:
     should_trigger: bool
-    use_enhanced_flow: bool
-    structured_payload: object
+    structured_payload: EnhancedStoryResponse
 
 
 # === Shared Helper Utilities ===
@@ -184,76 +183,53 @@ def _execute_story_prompt(
     )
 
 
-def _parse_story_response(
-    raw_response: str, *, allow_legacy_fallback: bool = True
-) -> StoryParseResult:
+def _parse_story_response(raw_response: str) -> StoryParseResult:
+    parse_error = False
     try:
         enhanced_response = parse_enhanced_story_response(raw_response)
-        logger.info("✅ ENTITY PARSE: Successfully parsed with new entity system")
-        logger.info(
-            "🎯 ENTITY DEBUG: Characters named=%s, unnamed=%s",
-            enhanced_response.entities.characters.named,
-            enhanced_response.entities.characters.unnamed,
-        )
-        logger.info(
-            "🎯 ENTITY DEBUG: Locations named=%s, unnamed=%s",
-            enhanced_response.entities.locations.named,
-            enhanced_response.entities.locations.unnamed,
-        )
-        logger.info(
-            "🎯 ENTITY DEBUG: Vocabulary words: %s",
-            enhanced_response.vocabulary_words,
-        )
-        vocabulary_words = list(enhanced_response.vocabulary_words or [])
-        return StoryParseResult(
-            story=enhanced_response.story,
-            structured=enhanced_response,
-            vocabulary_words=vocabulary_words,
-            used_enhanced_parser=True,
-        )
-    except Exception as exc:  # pylint: disable=broad-except
-        if not allow_legacy_fallback:
-            raise
-        logger.warning(
-            "⚠️ FALLBACK: Enhanced parsing failed, using legacy parser: %s",
-            exc,
-        )
-        structured_response = parse_structured_story_response(raw_response)
-        logger.info(
-            "🎯 LEGACY DEBUG: Parsed metadata: %s",
-            structured_response.metadata,
-        )
-        logger.info(
-            "🎯 LEGACY DEBUG: design_options: %s",
-            structured_response.metadata.design_options,
-        )
-        return StoryParseResult(
-            story=structured_response.story,
-            structured=structured_response,
+    except ValueError:
+        parse_error = True
+        logger.error("❌ ENTITY PARSE: Enhanced parser failed, using raw response fallback")
+        enhanced_response = EnhancedStoryResponse(
+            story=raw_response,
+            entities=StoryEntities(),
             vocabulary_words=[],
-            used_enhanced_parser=False,
         )
+
+    logger.info(
+        "✅ ENTITY PARSE: Characters named=%s, unnamed=%s",
+        len(enhanced_response.entities.characters.named),
+        len(enhanced_response.entities.characters.unnamed),
+    )
+    logger.info(
+        "✅ ENTITY PARSE: Locations named=%s, unnamed=%s",
+        len(enhanced_response.entities.locations.named),
+        len(enhanced_response.entities.locations.unnamed),
+    )
+    if enhanced_response.vocabulary_words:
+        logger.info("🎯 ENTITY DEBUG: Vocabulary words: %s", enhanced_response.vocabulary_words)
+
+    if parse_error:
+        logger.error("⚠️ ENTITY PARSE: Fallback response used due to parsing failure")
+
+    vocabulary_words = list(enhanced_response.vocabulary_words or [])
+    return StoryParseResult(
+        story=enhanced_response.story,
+        structured=enhanced_response,
+        vocabulary_words=vocabulary_words,
+        had_parse_error=parse_error,
+    )
 
 
 def _evaluate_design_decision(
     parse_result: StoryParseResult, story_mode: str
 ) -> DesignDecision:
-    if parse_result.used_enhanced_parser:
-        should_trigger = validate_entity_structure(parse_result.structured.entities)
-        logger.info(
-            "🎯 DESIGN PHASE DEBUG: validate_entity_structure() returned: %s",
-            should_trigger,
-        )
-        skip_msg = "🎯 DESIGN PHASE DEBUG: Skipping design phase because story_mode='named'"
-    else:
-        should_trigger = should_trigger_design_phase(parse_result.structured)
-        logger.info(
-            "🎯 DESIGN PHASE DEBUG: Legacy should_trigger_design_phase() returned: %s",
-            should_trigger,
-        )
-        skip_msg = (
-            "🎯 DESIGN PHASE DEBUG: Skipping legacy design phase because story_mode='named'"
-        )
+    should_trigger = validate_entity_structure(parse_result.structured.entities)
+    logger.info(
+        "🎯 DESIGN PHASE DEBUG: validate_entity_structure() returned: %s",
+        should_trigger,
+    )
+    skip_msg = "🎯 DESIGN PHASE DEBUG: Skipping design phase because story_mode='named'"
 
     if story_mode == "named" and should_trigger:
         logger.info(skip_msg)
@@ -261,7 +237,6 @@ def _evaluate_design_decision(
 
     return DesignDecision(
         should_trigger=should_trigger,
-        use_enhanced_flow=parse_result.used_enhanced_parser,
         structured_payload=parse_result.structured,
     )
 
@@ -294,42 +269,27 @@ def _activate_design_phase_if_needed(
     *,
     stage_label: str = "DESIGN PHASE",
 ) -> Optional[ChatResponse]:
-    if not decision.should_trigger:
-        logger.info(
-            "❌ %s: Skipping design phase - no designable entities found",
-            stage_label,
-        )
-        return None
+    # if not decision.should_trigger:
+    #     logger.info(
+    #         "❌ %s: Skipping design phase - no designable entities found",
+    #         stage_label,
+    #     )
+    #     return None
 
     _transition_phase(context.session, StorywritingPhase.DESIGNING)
 
-    if decision.use_enhanced_flow and hasattr(
-        decision.structured_payload, "entities"
-    ):
-        total_entities = (
-            len(decision.structured_payload.entities.characters.unnamed)
-            + len(decision.structured_payload.entities.locations.unnamed)
-        )
-        logger.info(
-            "✅ %s: Triggering design phase with %s designable entities",
-            stage_label,
-            total_entities,
-        )
-        design_response = trigger_enhanced_design_phase(
-            context.session, decision.structured_payload
-        )
-    else:
-        design_options = getattr(
-            decision.structured_payload.metadata, "design_options", None
-        )
-        logger.info(
-            "✅ %s: Triggering legacy design phase with options: %s",
-            stage_label,
-            design_options,
-        )
-        design_response = trigger_design_phase(
-            context.session, decision.structured_payload
-        )
+    total_entities = (
+        len(decision.structured_payload.entities.characters.unnamed)
+        + len(decision.structured_payload.entities.locations.unnamed)
+    )
+    logger.info(
+        "✅ %s: Triggering design phase with %s designable entities",
+        stage_label,
+        total_entities,
+    )
+    design_response = trigger_enhanced_design_phase(
+        context.session, decision.structured_payload
+    )
 
     design_response.suggestedTheme = get_theme_suggestion(context.topic)
     return design_response
@@ -633,24 +593,19 @@ async def _generate_initial_story_for_topic(
             session_data.askedVocabWords,
             apply_vocab=False,
         )
-        parse_result = _parse_story_response(
-            prompt_outcome.text, allow_legacy_fallback=False
-        )
+        parse_result = _parse_story_response(prompt_outcome.text)
 
-        if parse_result.used_enhanced_parser and hasattr(
-            parse_result.structured, "entities"
-        ):
-            total_characters = len(
-                parse_result.structured.entities.characters.named
-            ) + len(parse_result.structured.entities.characters.unnamed)
-            total_locations = len(
-                parse_result.structured.entities.locations.named
-            ) + len(parse_result.structured.entities.locations.unnamed)
-            logger.info(
-                "✅ ENTITY PARSE: Found %s characters, %s locations",
-                total_characters,
-                total_locations,
-            )
+        total_characters = len(parse_result.structured.entities.characters.named) + len(
+            parse_result.structured.entities.characters.unnamed
+        )
+        total_locations = len(parse_result.structured.entities.locations.named) + len(
+            parse_result.structured.entities.locations.unnamed
+        )
+        logger.info(
+            "✅ ENTITY PARSE: Found %s characters, %s locations",
+            total_characters,
+            total_locations,
+        )
 
         _record_story_generation(
             context,
@@ -679,7 +634,7 @@ async def _generate_initial_story_for_topic(
 
     except Exception as exc:  # pylint: disable=broad-except
         logger.warning(
-            "⚠️ NEW STORY FALLBACK: Enhanced parsing failed, using simple generation: %s",
+            "⚠️ NEW STORY FALLBACK: Story generation failed, using simple generation: %s",
             exc,
         )
         fallback_plan = PromptPlan(
@@ -929,12 +884,13 @@ def _reset_session_for_new_story(session_data: SessionData, new_topic: str) -> N
     session_data.designPhase = None
     session_data.currentDesignAspect = None
     session_data.designAspectHistory = []
-    session_data.storyMetadata = None
     session_data.designComplete = False
     session_data.namingComplete = False
     session_data.designedEntities = []
     session_data.currentEntityType = None
     session_data.currentEntityDescriptor = None
+    session_data.currentEntityName = None
+    session_data.entityNameOverrides = {}
     session_data.storyPhase = None
     session_data.conflictType = None
     session_data.conflictScale = None
