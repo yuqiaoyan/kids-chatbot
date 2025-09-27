@@ -2,7 +2,8 @@
 
 import json
 import logging
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import List, Optional, Sequence
 
 from content_manager import content_manager
 from llm_provider import llm_provider
@@ -34,6 +35,309 @@ from models.schemas import (
 
 
 logger = logging.getLogger(__name__)
+
+
+# === Story Context Objects ===
+
+
+@dataclass
+class StoryTurnContext:
+    session: SessionData
+    topic: Optional[str]
+    story_mode: str = "auto"
+    user_message: Optional[str] = None
+    intro_prefix: Optional[str] = None
+
+    def story_window(self, size: int = 3) -> str:
+        return "\n".join(self.session.storyParts[-size:])
+
+    @property
+    def vocab_pool(self) -> List[str]:
+        return self.session.askedVocabWords + self.session.contentVocabulary
+
+
+@dataclass
+class PromptPlan:
+    prompt: str
+    tags: Sequence[str]
+    should_end_story: bool = False
+    sub_interaction: int = 1
+
+
+@dataclass
+class PromptOutcome:
+    text: str
+    duration: float
+    selected_vocab: List[str] = field(default_factory=list)
+
+
+@dataclass
+class StoryParseResult:
+    story: str
+    structured: object
+    vocabulary_words: List[str]
+    used_enhanced_parser: bool
+
+
+@dataclass
+class DesignDecision:
+    should_trigger: bool
+    use_enhanced_flow: bool
+    structured_payload: object
+
+
+# === Shared Helper Utilities ===
+
+
+def _enhance_prompt_with_vocab(
+    base_prompt: str, topic: Optional[str], vocab_sources: Sequence[str]
+) -> tuple[str, List[str]]:
+    enhanced_prompt, selected_vocab = prompt_manager.enhance_with_vocabulary(
+        base_prompt,
+        topic,
+        vocab_sources,
+    )
+    return enhanced_prompt, selected_vocab or []
+
+
+def _extend_content_vocabulary(
+    session_data: SessionData, new_words: Sequence[str], context_label: str
+) -> None:
+    if not new_words:
+        return
+
+    session_data.contentVocabulary.extend(new_words)
+    logger.info(
+        "📋 VOCABULARY TRACKING: %s - Added %s words. Total tracked: %s",
+        context_label,
+        len(new_words),
+        len(session_data.contentVocabulary),
+    )
+
+
+def _log_vocabulary_snapshot(
+    topic: Optional[str], session_data: SessionData, story_text: str, stage_label: str
+) -> None:
+    log_vocabulary_debug_info(
+        topic,
+        session_data.askedVocabWords,
+        story_text,
+        stage_label,
+        len(session_data.contentVocabulary),
+    )
+
+
+def _log_educational_interaction(
+    event_type: str,
+    response_text: str,
+    duration: float,
+    session_data: SessionData,
+    user_message: str,
+    *,
+    sub_interaction: int,
+) -> None:
+    educational_data = collect_educational_data(
+        session_data,
+        ChatResponse(response=response_text),
+        "storywriting",
+        user_message,
+        [event_type],
+        sub_interaction=sub_interaction,
+    )
+    latency_logger.log_educational_interaction(
+        event_type,
+        response_text,
+        duration,
+        educational_data,
+    )
+
+
+def _prepend_feedback(feedback: Optional[str], story_text: str) -> str:
+    if not feedback:
+        return story_text
+    return f"{feedback}\n\n{story_text}"
+
+
+def _execute_story_prompt(
+    plan: PromptPlan,
+    context: StoryTurnContext,
+    vocab_sources: Sequence[str],
+    *,
+    apply_vocab: bool = True,
+) -> PromptOutcome:
+    prompt_to_send = plan.prompt
+    selected_vocab: List[str] = []
+
+    if apply_vocab:
+        prompt_to_send, selected_vocab = _enhance_prompt_with_vocab(
+            plan.prompt,
+            context.topic,
+            vocab_sources,
+        )
+
+    response_text = llm_provider.generate_response(prompt_to_send)
+    duration = get_latest_llm_timing()
+    return PromptOutcome(
+        text=response_text,
+        duration=duration,
+        selected_vocab=list(selected_vocab),
+    )
+
+
+def _parse_story_response(
+    raw_response: str, *, allow_legacy_fallback: bool = True
+) -> StoryParseResult:
+    try:
+        enhanced_response = parse_enhanced_story_response(raw_response)
+        logger.info("✅ ENTITY PARSE: Successfully parsed with new entity system")
+        logger.info(
+            "🎯 ENTITY DEBUG: Characters named=%s, unnamed=%s",
+            enhanced_response.entities.characters.named,
+            enhanced_response.entities.characters.unnamed,
+        )
+        logger.info(
+            "🎯 ENTITY DEBUG: Locations named=%s, unnamed=%s",
+            enhanced_response.entities.locations.named,
+            enhanced_response.entities.locations.unnamed,
+        )
+        logger.info(
+            "🎯 ENTITY DEBUG: Vocabulary words: %s",
+            enhanced_response.vocabulary_words,
+        )
+        vocabulary_words = list(enhanced_response.vocabulary_words or [])
+        return StoryParseResult(
+            story=enhanced_response.story,
+            structured=enhanced_response,
+            vocabulary_words=vocabulary_words,
+            used_enhanced_parser=True,
+        )
+    except Exception as exc:  # pylint: disable=broad-except
+        if not allow_legacy_fallback:
+            raise
+        logger.warning(
+            "⚠️ FALLBACK: Enhanced parsing failed, using legacy parser: %s",
+            exc,
+        )
+        structured_response = parse_structured_story_response(raw_response)
+        logger.info(
+            "🎯 LEGACY DEBUG: Parsed metadata: %s",
+            structured_response.metadata,
+        )
+        logger.info(
+            "🎯 LEGACY DEBUG: design_options: %s",
+            structured_response.metadata.design_options,
+        )
+        return StoryParseResult(
+            story=structured_response.story,
+            structured=structured_response,
+            vocabulary_words=[],
+            used_enhanced_parser=False,
+        )
+
+
+def _evaluate_design_decision(
+    parse_result: StoryParseResult, story_mode: str
+) -> DesignDecision:
+    if parse_result.used_enhanced_parser:
+        should_trigger = validate_entity_structure(parse_result.structured.entities)
+        logger.info(
+            "🎯 DESIGN PHASE DEBUG: validate_entity_structure() returned: %s",
+            should_trigger,
+        )
+        skip_msg = "🎯 DESIGN PHASE DEBUG: Skipping design phase because story_mode='named'"
+    else:
+        should_trigger = should_trigger_design_phase(parse_result.structured)
+        logger.info(
+            "🎯 DESIGN PHASE DEBUG: Legacy should_trigger_design_phase() returned: %s",
+            should_trigger,
+        )
+        skip_msg = (
+            "🎯 DESIGN PHASE DEBUG: Skipping legacy design phase because story_mode='named'"
+        )
+
+    if story_mode == "named" and should_trigger:
+        logger.info(skip_msg)
+        should_trigger = False
+
+    return DesignDecision(
+        should_trigger=should_trigger,
+        use_enhanced_flow=parse_result.used_enhanced_parser,
+        structured_payload=parse_result.structured,
+    )
+
+
+def _record_story_generation(
+    context: StoryTurnContext,
+    parse_result: StoryParseResult,
+    stage_label: str,
+    metadata_label: str,
+    fallback_label: str,
+) -> None:
+    context.session.storyParts.append(parse_result.story)
+
+    if parse_result.vocabulary_words:
+        _extend_content_vocabulary(
+            context.session, parse_result.vocabulary_words, metadata_label
+        )
+    else:
+        story_vocab_words = extract_vocabulary_from_content(
+            parse_result.story, context.session.contentVocabulary
+        )
+        _extend_content_vocabulary(context.session, story_vocab_words, fallback_label)
+
+    _log_vocabulary_snapshot(context.topic, context.session, parse_result.story, stage_label)
+
+
+def _activate_design_phase_if_needed(
+    context: StoryTurnContext,
+    decision: DesignDecision,
+    *,
+    stage_label: str = "DESIGN PHASE",
+) -> Optional[ChatResponse]:
+    if not decision.should_trigger:
+        logger.info(
+            "❌ %s: Skipping design phase - no designable entities found",
+            stage_label,
+        )
+        return None
+
+    _transition_phase(context.session, StorywritingPhase.DESIGNING)
+
+    if decision.use_enhanced_flow and hasattr(
+        decision.structured_payload, "entities"
+    ):
+        total_entities = (
+            len(decision.structured_payload.entities.characters.unnamed)
+            + len(decision.structured_payload.entities.locations.unnamed)
+        )
+        logger.info(
+            "✅ %s: Triggering design phase with %s designable entities",
+            stage_label,
+            total_entities,
+        )
+        design_response = trigger_enhanced_design_phase(
+            context.session, decision.structured_payload
+        )
+    else:
+        design_options = getattr(
+            decision.structured_payload.metadata, "design_options", None
+        )
+        logger.info(
+            "✅ %s: Triggering legacy design phase with options: %s",
+            stage_label,
+            design_options,
+        )
+        design_response = trigger_design_phase(
+            context.session, decision.structured_payload
+        )
+
+    design_response.suggestedTheme = get_theme_suggestion(context.topic)
+    return design_response
+
+
+def _prepare_session_for_topic(session_data: SessionData, topic: Optional[str]) -> None:
+    session_data.topic = topic
+    session_data.currentStep = 2
 
 
 async def handle_storywriting(user_message: str, session_data: SessionData, story_mode: str = "auto") -> ChatResponse:
@@ -143,167 +447,58 @@ def _log_phase_state(stage: str, session_data: SessionData, user_message: str) -
     )
 
 
+# === Topic Initialization Flow ===
+
+
 async def _handle_topic_initialization(
     user_message: str, session_data: SessionData, story_mode: str
 ) -> ChatResponse:
     topic = extract_topic_from_message(user_message)
-    session_data.topic = topic
-    session_data.currentStep = 2  # Moving to Step 2 after topic selection
+    _prepare_session_for_topic(session_data, topic)
 
-    structured_prompt = prompt_manager.get_story_opening_prompt(topic, story_mode)
-    enhanced_prompt, _ = prompt_manager.enhance_with_vocabulary(
-        structured_prompt, topic, session_data.askedVocabWords
+    context = StoryTurnContext(
+        session=session_data,
+        topic=topic,
+        story_mode=story_mode,
+    )
+    plan = PromptPlan(
+        prompt=prompt_manager.get_story_opening_prompt(topic, story_mode),
+        tags=["story_generation"],
+        sub_interaction=1,
+    )
+    prompt_outcome = _execute_story_prompt(
+        plan,
+        context,
+        session_data.askedVocabWords,
     )
 
-    raw_response = llm_provider.generate_response(enhanced_prompt)
     logger.info(
         "🎯 LLM RESPONSE DEBUG: Raw response length: %s characters",
-        len(raw_response),
+        len(prompt_outcome.text),
     )
-    logger.info("🎯 LLM RESPONSE DEBUG: First 200 chars: %s...", raw_response[:200])
+    logger.info(
+        "🎯 LLM RESPONSE DEBUG: First 200 chars: %s...",
+        prompt_outcome.text[:200],
+    )
 
-    try:
-        enhanced_response = parse_enhanced_story_response(raw_response)
-        logger.info("✅ ENTITY PARSE: Successfully parsed with new entity system")
-        logger.info(
-            "🎯 ENTITY DEBUG: Characters named=%s, unnamed=%s",
-            enhanced_response.entities.characters.named,
-            enhanced_response.entities.characters.unnamed,
-        )
-        logger.info(
-            "🎯 ENTITY DEBUG: Locations named=%s, unnamed=%s",
-            enhanced_response.entities.locations.named,
-            enhanced_response.entities.locations.unnamed,
-        )
-        logger.info(
-            "🎯 ENTITY DEBUG: Vocabulary words: %s",
-            enhanced_response.vocabulary_words,
-        )
+    parse_result = _parse_story_response(prompt_outcome.text)
+    _record_story_generation(
+        context,
+        parse_result,
+        stage_label="Initial Story Generation",
+        metadata_label="Initial Story Generation (Metadata)",
+        fallback_label="Initial Story Generation (Story Content)",
+    )
 
-        session_data.storyParts.append(enhanced_response.story)
-
-        if enhanced_response.vocabulary_words:
-            session_data.contentVocabulary.extend(enhanced_response.vocabulary_words)
-            logger.info(
-                "📋 VOCABULARY TRACKING: Added %s words from entity metadata. Total tracked: %s",
-                len(enhanced_response.vocabulary_words),
-                len(session_data.contentVocabulary),
-            )
-        else:
-            story_vocab_words = extract_vocabulary_from_content(
-                enhanced_response.story, session_data.contentVocabulary
-            )
-            if story_vocab_words:
-                session_data.contentVocabulary.extend(story_vocab_words)
-                logger.info(
-                    "📋 VOCABULARY TRACKING: Fallback - Added %s words from story content. Total tracked: %s",
-                    len(story_vocab_words),
-                    len(session_data.contentVocabulary),
-                )
-
-        log_vocabulary_debug_info(
-            topic,
-            session_data.askedVocabWords,
-            enhanced_response.story,
-            "Initial Story Generation",
-            len(session_data.contentVocabulary),
-        )
-
-        should_trigger = validate_entity_structure(enhanced_response.entities)
-        logger.info(
-            "🎯 DESIGN PHASE DEBUG: validate_entity_structure() returned: %s",
-            should_trigger,
-        )
-
-        if story_mode == "named" and should_trigger:
-            logger.info(
-                "🎯 DESIGN PHASE DEBUG: Skipping design phase because story_mode='named'"
-            )
-            should_trigger = False
-
-        structured_response = enhanced_response
-
-    except Exception as e:  # pylint: disable=broad-except
-        logger.warning(
-            "⚠️ FALLBACK: Enhanced parsing failed, using legacy parser: %s",
-            e,
-        )
-        structured_response = parse_structured_story_response(raw_response)
-        logger.info(
-            "🎯 LEGACY DEBUG: Parsed metadata: %s",
-            structured_response.metadata,
-        )
-        logger.info(
-            "🎯 LEGACY DEBUG: design_options: %s",
-            structured_response.metadata.design_options,
-        )
-
-        session_data.storyParts.append(structured_response.story)
-
-        story_vocab_words = extract_vocabulary_from_content(
-            structured_response.story, session_data.contentVocabulary
-        )
-        if story_vocab_words:
-            session_data.contentVocabulary.extend(story_vocab_words)
-            logger.info(
-                "📋 VOCABULARY TRACKING: Legacy - Added %s words from story content. Total tracked: %s",
-                len(story_vocab_words),
-                len(session_data.contentVocabulary),
-            )
-
-        log_vocabulary_debug_info(
-            topic,
-            session_data.askedVocabWords,
-            structured_response.story,
-            "Initial Story Generation",
-            len(session_data.contentVocabulary),
-        )
-
-        should_trigger = should_trigger_design_phase(structured_response)
-        logger.info(
-            "🎯 DESIGN PHASE DEBUG: Legacy should_trigger_design_phase() returned: %s",
-            should_trigger,
-        )
-
-        if story_mode == "named" and should_trigger:
-            logger.info(
-                "🎯 DESIGN PHASE DEBUG: Skipping legacy design phase because story_mode='named'"
-            )
-            should_trigger = False
-
-    if should_trigger:
-        if hasattr(structured_response, "entities"):
-            total_entities = (
-                len(structured_response.entities.characters.unnamed)
-                + len(structured_response.entities.locations.unnamed)
-            )
-            logger.info(
-                "✅ DESIGN PHASE: Triggering design phase with %s designable entities",
-                total_entities,
-            )
-            _transition_phase(session_data, StorywritingPhase.DESIGNING)
-            design_response = trigger_enhanced_design_phase(
-                session_data, structured_response
-            )
-        else:
-            logger.info(
-                "✅ DESIGN PHASE: Triggering legacy design phase with options: %s",
-                structured_response.metadata.design_options,
-            )
-            _transition_phase(session_data, StorywritingPhase.DESIGNING)
-            design_response = trigger_design_phase(session_data, structured_response)
-
-        design_response.suggestedTheme = get_theme_suggestion(topic)
+    decision = _evaluate_design_decision(parse_result, story_mode)
+    design_response = _activate_design_phase_if_needed(context, decision)
+    if design_response:
         return design_response
 
-    logger.info(
-        "❌ DESIGN PHASE: Skipping design phase - no designable entities found"
-    )
     suggested_theme = get_theme_suggestion(topic)
-
     _transition_phase(session_data, StorywritingPhase.WRITING)
     return ChatResponse(
-        response=structured_response.story,
+        response=parse_result.story,
         sessionData=session_data,
         suggestedTheme=suggested_theme,
     )
@@ -411,78 +606,73 @@ async def _handle_spontaneous_topic_switch(
     )
 
 
+# === New Story Flow ===
+
+
 async def _generate_initial_story_for_topic(
     session_data: SessionData,
     topic: Optional[str],
     *,
     intro_prefix: Optional[str],
 ) -> ChatResponse:
-    story_prompt = prompt_manager.get_story_opening_prompt(topic, "auto")
-    raw_response = llm_provider.generate_response(story_prompt)
+    context = StoryTurnContext(
+        session=session_data,
+        topic=topic,
+        intro_prefix=intro_prefix,
+    )
+    plan = PromptPlan(
+        prompt=prompt_manager.get_story_opening_prompt(topic, "auto"),
+        tags=["story_generation"],
+        sub_interaction=1,
+    )
 
     try:
-        enhanced_response = parse_enhanced_story_response(raw_response)
-        logger.info(
-            "✅ ENTITY PARSE: Found %s characters, %s locations",
-            len(
-                enhanced_response.entities.characters.named
-                + enhanced_response.entities.characters.unnamed
-            ),
-            len(
-                enhanced_response.entities.locations.named
-                + enhanced_response.entities.locations.unnamed
-            ),
-        )
-
-        session_data.storyParts.append(enhanced_response.story)
-
-        if enhanced_response.vocabulary_words:
-            session_data.contentVocabulary.extend(enhanced_response.vocabulary_words)
-            logger.info(
-                "📋 VOCABULARY TRACKING: Added %s words from entity metadata. Total tracked: %s",
-                len(enhanced_response.vocabulary_words),
-                len(session_data.contentVocabulary),
-            )
-
-        log_vocabulary_debug_info(
-            topic,
+        prompt_outcome = _execute_story_prompt(
+            plan,
+            context,
             session_data.askedVocabWords,
-            enhanced_response.story,
-            "New Story Generation",
-            len(session_data.contentVocabulary),
+            apply_vocab=False,
+        )
+        parse_result = _parse_story_response(
+            prompt_outcome.text, allow_legacy_fallback=False
         )
 
-        should_trigger = validate_entity_structure(enhanced_response.entities)
-        logger.info(
-            "🎯 NEW STORY DESIGN: validate_entity_structure() returned: %s",
-            should_trigger,
-        )
-
-        if should_trigger:
-            total_entities = (
-                len(enhanced_response.entities.characters.unnamed)
-                + len(enhanced_response.entities.locations.unnamed)
-            )
+        if parse_result.used_enhanced_parser and hasattr(
+            parse_result.structured, "entities"
+        ):
+            total_characters = len(
+                parse_result.structured.entities.characters.named
+            ) + len(parse_result.structured.entities.characters.unnamed)
+            total_locations = len(
+                parse_result.structured.entities.locations.named
+            ) + len(parse_result.structured.entities.locations.unnamed)
             logger.info(
-                "✅ NEW STORY DESIGN: Triggering design phase with %s designable entities",
-                total_entities,
+                "✅ ENTITY PARSE: Found %s characters, %s locations",
+                total_characters,
+                total_locations,
             )
-            _transition_phase(session_data, StorywritingPhase.DESIGNING)
-            design_response = trigger_enhanced_design_phase(
-                session_data, enhanced_response
-            )
+
+        _record_story_generation(
+            context,
+            parse_result,
+            stage_label="New Story Generation",
+            metadata_label="New Story Generation (Metadata)",
+            fallback_label="New Story Generation (Story Content)",
+        )
+
+        decision = _evaluate_design_decision(parse_result, "auto")
+        design_response = _activate_design_phase_if_needed(
+            context, decision, stage_label="NEW STORY DESIGN"
+        )
+        if design_response:
             design_response.response = _apply_intro_prefix(
-                intro_prefix, enhanced_response.story
+                intro_prefix, parse_result.story
             )
-            design_response.suggestedTheme = get_theme_suggestion(topic)
             return design_response
 
-        logger.info(
-            "❌ NEW STORY DESIGN: Skipping design phase - no designable entities found"
-        )
         _transition_phase(session_data, StorywritingPhase.WRITING)
         return ChatResponse(
-            response=_apply_intro_prefix(intro_prefix, enhanced_response.story),
+            response=_apply_intro_prefix(intro_prefix, parse_result.story),
             sessionData=session_data,
             suggestedTheme=get_theme_suggestion(topic),
         )
@@ -492,32 +682,33 @@ async def _generate_initial_story_for_topic(
             "⚠️ NEW STORY FALLBACK: Enhanced parsing failed, using simple generation: %s",
             exc,
         )
-        base_prompt = prompt_manager.get_topic_selection_story_prompt(topic)
-        enhanced_prompt, selected_vocab = prompt_manager.enhance_with_vocabulary(
-            base_prompt, topic, session_data.askedVocabWords
+        fallback_plan = PromptPlan(
+            prompt=prompt_manager.get_topic_selection_story_prompt(topic),
+            tags=["story_generation"],
+            sub_interaction=1,
         )
-        story_response = llm_provider.generate_response(enhanced_prompt)
-        session_data.storyParts.append(story_response)
-
-        if selected_vocab:
-            session_data.contentVocabulary.extend(selected_vocab)
-            logger.info(
-                "📋 VOCABULARY TRACKING: Fallback - Added %s words. Total: %s",
-                len(selected_vocab),
-                len(session_data.contentVocabulary),
-            )
-
-        log_vocabulary_debug_info(
-            topic,
+        fallback_outcome = _execute_story_prompt(
+            fallback_plan,
+            context,
             session_data.askedVocabWords,
-            story_response,
+        )
+
+        context.session.storyParts.append(fallback_outcome.text)
+        _extend_content_vocabulary(
+            context.session,
+            fallback_outcome.selected_vocab,
             "New Story Generation (Fallback)",
-            len(session_data.contentVocabulary),
+        )
+        _log_vocabulary_snapshot(
+            topic,
+            context.session,
+            fallback_outcome.text,
+            "New Story Generation (Fallback)",
         )
 
         _transition_phase(session_data, StorywritingPhase.WRITING)
         return ChatResponse(
-            response=_apply_intro_prefix(intro_prefix, story_response),
+            response=_apply_intro_prefix(intro_prefix, fallback_outcome.text),
             sessionData=session_data,
             suggestedTheme=get_theme_suggestion(topic),
         )
@@ -529,62 +720,63 @@ def _apply_intro_prefix(prefix: Optional[str], story_text: str) -> str:
     return story_text
 
 
-async def _handle_story_continuation(
-    user_message: str, session_data: SessionData
-) -> ChatResponse:
-    _transition_phase(session_data, StorywritingPhase.WRITING)
-    session_data.storyParts.append(f"User: {user_message}")
+# === Story Continuation Flow ===
 
-    grammar_feedback = llm_provider.provide_grammar_feedback(user_message)
-    feedback_duration = get_latest_llm_timing()
 
-    story_context = "\n".join(session_data.storyParts[-3:])
+def _capture_user_turn(context: StoryTurnContext) -> None:
+    context.session.storyParts.append(f"User: {context.user_message}")
 
-    if session_data.currentStep >= 3:
-        try:
-            assessment_prompt = prompt_manager.get_story_arc_assessment_prompt(
-                session_data.storyParts, session_data.topic
-            )
-            assessment_response = llm_provider.generate_response(assessment_prompt)
-            assessment_duration = get_latest_llm_timing()
 
-            assessment_educational_data = collect_educational_data(
-                session_data,
-                ChatResponse(response=assessment_response),
-                "storywriting",
-                user_message,
-                ["story_assessment"],
-                sub_interaction=1,
-            )
-            latency_logger.log_educational_interaction(
-                "story_assessment",
-                assessment_response,
-                assessment_duration,
-                assessment_educational_data,
-            )
+def _maybe_update_story_assessment(context: StoryTurnContext) -> None:
+    if context.session.currentStep < 3:
+        return
 
-            assessment = json.loads(assessment_response)
+    try:
+        assessment_prompt = prompt_manager.get_story_arc_assessment_prompt(
+            context.session.storyParts,
+            context.topic,
+        )
+        assessment_response = llm_provider.generate_response(assessment_prompt)
+        assessment_duration = get_latest_llm_timing()
 
-            session_data.narrativeAssessment = assessment
-            session_data.storyPhase = assessment.get("current_phase", "development")
-            session_data.characterGrowthScore = assessment.get("character_growth", 0)
-            session_data.completenessScore = assessment.get("completeness_score", 0)
-            session_data.conflictType = assessment.get("conflict_type", "none")
+        _log_educational_interaction(
+            "story_assessment",
+            assessment_response,
+            assessment_duration,
+            context.session,
+            context.user_message or "",
+            sub_interaction=1,
+        )
 
-            logger.info(
-                "📖 STORY ARC ASSESSMENT: Phase=%s, Growth=%s%, Complete=%s%, Conflict=%s",
-                session_data.storyPhase,
-                session_data.characterGrowthScore,
-                session_data.completenessScore,
-                session_data.conflictType,
-            )
+        assessment = json.loads(assessment_response)
 
-        except Exception as e:  # pylint: disable=broad-except
-            logger.error("❌ Story assessment failed: %s, falling back to quality gates", e)
-            session_data.narrativeAssessment = None
+        context.session.narrativeAssessment = assessment
+        context.session.storyPhase = assessment.get("current_phase", "development")
+        context.session.characterGrowthScore = assessment.get("character_growth", 0)
+        context.session.completenessScore = assessment.get("completeness_score", 0)
+        context.session.conflictType = assessment.get("conflict_type", "none")
 
+        logger.info(
+            "📖 STORY ARC ASSESSMENT: Phase=%s, Growth=%s%, Complete=%s%, Conflict=%s",
+            context.session.storyPhase,
+            context.session.characterGrowthScore,
+            context.session.completenessScore,
+            context.session.conflictType,
+        )
+
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.error(
+            "❌ Story assessment failed: %s, falling back to quality gates",
+            exc,
+        )
+        context.session.narrativeAssessment = None
+
+
+def _build_continuation_plan(
+    context: StoryTurnContext, story_context: str
+) -> PromptPlan:
     should_end_story, ending_reason = prompt_manager.should_end_story_intelligently(
-        session_data
+        context.session
     )
     logger.info(
         "📖 STORY ENDING DECISION: %s, reason: %s",
@@ -593,155 +785,134 @@ async def _handle_story_continuation(
     )
 
     if should_end_story:
-        base_prompt = prompt_manager.get_story_ending_prompt(
-            session_data.topic, story_context
-        )
-        enhanced_prompt, selected_vocab = prompt_manager.enhance_with_vocabulary(
-            base_prompt,
-            session_data.topic,
-            session_data.askedVocabWords + session_data.contentVocabulary,
-        )
-        story_response = llm_provider.generate_response(enhanced_prompt)
-        story_duration = get_latest_llm_timing()
-
-        ending_educational_data = collect_educational_data(
-            session_data,
-            ChatResponse(response=story_response),
-            "storywriting",
-            user_message,
-            ["story_ending"],
+        prompt = prompt_manager.get_story_ending_prompt(context.topic, story_context)
+        return PromptPlan(
+            prompt=prompt,
+            tags=["story_ending"],
+            should_end_story=True,
             sub_interaction=1,
         )
-        latency_logger.log_educational_interaction(
-            "story_ending",
-            story_response,
-            story_duration,
-            ending_educational_data,
-        )
 
-        if selected_vocab:
-            logger.info("Story ending included vocabulary: %s", selected_vocab)
-            session_data.contentVocabulary.extend(selected_vocab)
-            logger.info(
-                "📋 VOCABULARY TRACKING: Added %s words to session. Total tracked: %s",
-                len(selected_vocab),
-                len(session_data.contentVocabulary),
-            )
-
-        log_vocabulary_debug_info(
-            session_data.topic,
-            session_data.askedVocabWords + session_data.contentVocabulary,
-            story_response,
-            "Story Ending",
-            len(session_data.contentVocabulary),
-        )
-
-        if grammar_feedback:
-            story_response = grammar_feedback + "\n\n" + story_response
-
-        session_data.storyParts.append(story_response)
-        session_data.isComplete = True
-        _transition_phase(session_data, StorywritingPhase.COMPLETED)
-
-        return ChatResponse(
-            response=story_response,
-            vocabQuestion=None,
-            sessionData=session_data,
-        )
-
-    if session_data.narrativeAssessment:
-        base_prompt = prompt_manager.get_narrative_continuation_prompt(
-            session_data.narrativeAssessment, session_data.topic, story_context
+    if context.session.narrativeAssessment:
+        prompt = prompt_manager.get_narrative_continuation_prompt(
+            context.session.narrativeAssessment,
+            context.topic,
+            story_context,
         )
         logger.info(
             "📖 NARRATIVE CONTINUATION: Using phase-aware prompt for %s phase",
-            session_data.storyPhase,
+            context.session.storyPhase,
         )
     else:
-        base_prompt = prompt_manager.get_continue_story_prompt(
-            session_data.topic, story_context
-        )
+        prompt = prompt_manager.get_continue_story_prompt(context.topic, story_context)
         logger.info(
             "📖 NARRATIVE CONTINUATION: Using standard continuation prompt"
         )
 
     if (
-        session_data.narrativeAssessment
-        and not session_data.narrativeAssessment.get("has_clear_conflict", False)
-        and session_data.currentStep <= 3
+        context.session.narrativeAssessment
+        and not context.session.narrativeAssessment.get("has_clear_conflict", False)
+        and context.session.currentStep <= 3
     ):
         conflict_prompt = prompt_manager.get_conflict_integration_prompt(
-            session_data.topic, session_data.conflictType, session_data.conflictScale
+            context.topic,
+            context.session.conflictType,
+            context.session.conflictScale,
         )
-        base_prompt += f"\n\nADDITIONAL GUIDANCE: {conflict_prompt}"
+        prompt = f"{prompt}\n\nADDITIONAL GUIDANCE: {conflict_prompt}"
         logger.info(
             "📖 CONFLICT INTEGRATION: Added conflict guidance for %s story",
-            session_data.topic,
+            context.topic,
         )
 
-    enhanced_prompt, selected_vocab = prompt_manager.enhance_with_vocabulary(
-        base_prompt,
-        session_data.topic,
-        session_data.askedVocabWords + session_data.contentVocabulary,
+    return PromptPlan(
+        prompt=prompt,
+        tags=["story_generation"],
+        should_end_story=False,
+        sub_interaction=2,
     )
-    story_response = llm_provider.generate_response(enhanced_prompt)
-    story_duration = get_latest_llm_timing()
 
-    if selected_vocab:
-        logger.info("Story continuation included vocabulary: %s", selected_vocab)
-        session_data.contentVocabulary.extend(selected_vocab)
-        logger.info(
-            "📋 VOCABULARY TRACKING: Added %s words to session. Total tracked: %s",
-            len(selected_vocab),
-            len(session_data.contentVocabulary),
+
+async def _handle_story_continuation(
+    user_message: str, session_data: SessionData
+) -> ChatResponse:
+    _transition_phase(session_data, StorywritingPhase.WRITING)
+
+    context = StoryTurnContext(
+        session=session_data,
+        topic=session_data.topic,
+        user_message=user_message,
+    )
+    _capture_user_turn(context)
+
+    grammar_feedback = llm_provider.provide_grammar_feedback(user_message)
+    feedback_duration = get_latest_llm_timing()
+
+    story_context = context.story_window()
+
+    _maybe_update_story_assessment(context)
+
+    plan = _build_continuation_plan(context, story_context)
+    outcome = _execute_story_prompt(plan, context, context.vocab_pool)
+
+    stage_label = "Story Ending" if plan.should_end_story else "Story Continuation"
+    vocab_log_prefix = (
+        "Story ending" if plan.should_end_story else "Story continuation"
+    )
+
+    if outcome.selected_vocab:
+        logger.info("%s included vocabulary: %s", vocab_log_prefix, outcome.selected_vocab)
+        _extend_content_vocabulary(
+            session_data,
+            outcome.selected_vocab,
+            stage_label,
         )
 
-    log_vocabulary_debug_info(
+    _log_vocabulary_snapshot(
         session_data.topic,
-        session_data.askedVocabWords + session_data.contentVocabulary,
-        story_response,
-        "Story Continuation",
-        len(session_data.contentVocabulary),
+        session_data,
+        outcome.text,
+        stage_label,
     )
 
     if grammar_feedback:
-        feedback_educational_data = collect_educational_data(
-            session_data,
-            ChatResponse(response=grammar_feedback),
-            "storywriting",
-            user_message,
-            ["grammar_feedback"],
-            sub_interaction=1,
-        )
-        latency_logger.log_educational_interaction(
+        _log_educational_interaction(
             "grammar_feedback",
             grammar_feedback,
             feedback_duration,
-            feedback_educational_data,
+            session_data,
+            user_message,
+            sub_interaction=1,
         )
 
-    story_educational_data = collect_educational_data(
+    event_type = plan.tags[0] if plan.tags else (
+        "story_ending" if plan.should_end_story else "story_generation"
+    )
+    _log_educational_interaction(
+        event_type,
+        outcome.text,
+        outcome.duration,
         session_data,
-        ChatResponse(response=story_response),
-        "storywriting",
         user_message,
-        ["story_generation"],
-        sub_interaction=2,
-    )
-    latency_logger.log_educational_interaction(
-        "story_generation",
-        story_response,
-        story_duration,
-        story_educational_data,
+        sub_interaction=plan.sub_interaction,
     )
 
-    if grammar_feedback:
-        story_response = grammar_feedback + "\n\n" + story_response
+    final_story = _prepend_feedback(grammar_feedback, outcome.text)
 
-    session_data.storyParts.append(story_response)
+    if plan.should_end_story:
+        session_data.storyParts.append(final_story)
+        session_data.isComplete = True
+        _transition_phase(session_data, StorywritingPhase.COMPLETED)
+        return ChatResponse(
+            response=final_story,
+            vocabQuestion=None,
+            sessionData=session_data,
+        )
+
+    session_data.storyParts.append(final_story)
     session_data.currentStep += 1
 
-    return ChatResponse(response=story_response, sessionData=session_data)
+    return ChatResponse(response=final_story, sessionData=session_data)
 
 
 def _reset_session_for_new_story(session_data: SessionData, new_topic: str) -> None:
