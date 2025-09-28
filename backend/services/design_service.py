@@ -359,7 +359,9 @@ async def handle_design_phase_interaction(
 
     aspects = load_design_aspects(entity_type)
     remaining_aspects = [
-        aspect for aspect in aspects.keys() if aspect not in session_data.designAspectHistory
+        aspect
+        for aspect in aspects.keys()
+        if aspect != "naming" and aspect not in session_data.designAspectHistory
     ]
     should_continue_design = (
         len(session_data.designAspectHistory) < 2 and len(remaining_aspects) > 0
