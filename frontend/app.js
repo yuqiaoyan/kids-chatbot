@@ -129,9 +129,9 @@ document.addEventListener("DOMContentLoaded", async function () {
             storyParts: [],
             currentStep: 0,
             isComplete: false,
+            conversationPhase: 'not_started',
             askedVocabWords: [], // Track vocabulary words that have been asked
             vocabularyPhase: {
-                isActive: false,
                 questionsAsked: 0,
                 maxQuestions: 3,
                 isComplete: false
@@ -756,8 +756,8 @@ document.addEventListener("DOMContentLoaded", async function () {
             console.log("Starting vocabulary phase...");
             
             // Reset and activate vocabulary phase
+            sessionData.storywriting.conversationPhase = 'vocabulary';
             sessionData.storywriting.vocabularyPhase = {
-                isActive: true,
                 questionsAsked: 0,
                 maxQuestions: 3,
                 isComplete: false
@@ -870,7 +870,7 @@ document.addEventListener("DOMContentLoaded", async function () {
             
             // Mark vocabulary phase as complete
             sessionData.storywriting.vocabularyPhase.isComplete = true;
-            sessionData.storywriting.vocabularyPhase.isActive = false;
+            sessionData.storywriting.conversationPhase = 'completed';
             
             const response = await fetch("/chat", {
                 method: "POST",

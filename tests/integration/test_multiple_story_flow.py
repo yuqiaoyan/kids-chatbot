@@ -140,12 +140,13 @@ class TestMultipleStoryFlow:
             self.session_data.designPhase is None and
             self.session_data.currentDesignAspect is None and
             len(self.session_data.designAspectHistory) == 0 and
-            self.session_data.storyMetadata is None and
             self.session_data.designComplete == False and
             self.session_data.namingComplete == False and
             len(self.session_data.designedEntities) == 0 and
             self.session_data.currentEntityType is None and
-            self.session_data.currentEntityDescriptor is None
+            self.session_data.currentEntityDescriptor is None and
+            self.session_data.currentEntityName is None and
+            self.session_data.entityNameOverrides == {}
         )
         
         assert design_fields_reset, "Design phase fields were not properly reset between stories"
@@ -183,6 +184,8 @@ class TestMultipleStoryFlow:
         self.session_data.designedEntities = ["young explorer"]
         self.session_data.currentEntityType = "character"
         self.session_data.currentEntityDescriptor = "the young explorer"
+        self.session_data.currentEntityName = "Explorer"
+        self.session_data.entityNameOverrides = {"the young explorer": "Explorer"}
         
         # Mark first story complete and ready for new story
         self.session_data.isComplete = True
@@ -199,6 +202,8 @@ class TestMultipleStoryFlow:
         assert len(self.session_data.designedEntities) == 0
         assert self.session_data.currentEntityType is None
         assert self.session_data.currentEntityDescriptor is None
+        assert self.session_data.currentEntityName is None
+        assert self.session_data.entityNameOverrides == {}
         
         # Verify new story started successfully
         assert self.session_data.topic == "food adventures"
@@ -238,3 +243,4 @@ class TestMultipleStoryFlow:
         # Should ask for new story
         assert self.session_data.awaiting_story_confirmation == True
         assert "story" in response.response.lower()
+

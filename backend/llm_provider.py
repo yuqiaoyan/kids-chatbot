@@ -96,10 +96,17 @@ class LLMProvider:
                     temperature=0.7
                 )
 
+                print("---------START PROMPT----------")
                 print(prompt)
                 print("---------END PROMPT----------")
                 
-                return response.choices[0].message.content.strip()
+                response_text = response.choices[0].message.content.strip()
+
+                print("---------START RESPONSE----------")
+                print(response_text)
+                print("---------END RESPONSE----------")
+
+                return response_text
                 
             except Exception as e:
                 logger.error(f"OpenAI API error: {e}")

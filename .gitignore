@@ -53,3 +53,5 @@ design/
 # Log files
 logs/
 backend/logs/
+
+.claude/
