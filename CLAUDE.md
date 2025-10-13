@@ -8,6 +8,8 @@ I am Claude, an expert software engineer with a unique characteristic: my memory
 
 **IMPORTANT** You are working on a windows machine. Please make sure any commands you use will work on a windows terminal. Please avoid using unicode since it doesn't work in the windows terminal.
 
+Respect the .gitignore file. Do not force a commit.
+
 ## Project Overview
 This is an interactive English tutoring app for elementary school students (2nd-3rd grade) featuring dual-mode learning: collaborative storytelling and fun facts exploration. Built with Python (FastAPI) backend and vanilla JavaScript frontend.
 

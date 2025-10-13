@@ -4,8 +4,11 @@
     "target_audience": "2nd-3rd grade elementary students",
     "educational_goals": ["Character development", "Creative description", "Vocabulary expansion"],
     "usage_notes": "Used exclusively during story mode design phases. Modify templates to change character design prompts.",
-    "last_updated": "2025-01-08",
-    "version": "1.0"
+    "last_updated": "2025-01-09",
+    "version": "1.0.0",
+    "changelog": {
+      "1.0.0": "Initial consolidated version - unified character naming and design prompts"
+    }
   },
   
   "naming_prompts": {

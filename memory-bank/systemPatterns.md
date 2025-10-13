@@ -15,37 +15,188 @@ app.get("/health", ...)
 app.mount("/", StaticFiles(directory="../frontend", html=True), name="static")
 ```
 
-### Consolidated Prompt Architecture Pattern (LATEST BREAKTHROUGH - Phase 7)
+### Logging Module Architecture Pattern (LATEST REFACTORING)
 
-**Pattern**: JSON-based prompt consolidation with backwards compatibility and consistent field naming
-- **Why**: Scattered prompts across 7+ files made maintenance difficult and caused production bugs
-- **Discovery**: Template loading required consistent field names and sentence count specifications
-- **Implementation**: 4-file JSON architecture with enhanced ContentManager access patterns
+**Pattern**: Separated logging classes into dedicated modules for better maintainability
+- **Why**: app.py had grown to 3,364 lines, violating separation of concerns
+- **Implementation**: Extracted specialized logging classes into focused modules
+- **Benefits**: Improved maintainability, better testing capability, cleaner architecture
 
-**Consolidated Architecture**:
+**Module Structure**:
 ```python
-# New consolidated structure
-content_manager.get_prompt_template("story_templates", "named_entities")
-# Returns prompt_template from storywriting-prompts.json
+# backend/latency_logger.py - Comprehensive timing and educational logging
+class LatencyLogger:
+    def measure_request(self, func)         # Request timing decorator
+    def log_request_completion(...)         # Main educational logging
+    def log_educational_interaction(...)    # Multi-interaction logging
+    def get_current_llm_call_types(...)     # LLM call type tracking
 
-# Enhanced access with backwards compatibility
-if category == "story_templates":
-    storywriting_prompts = self.content.get("storywriting_prompts", {})
-    story_generation = storywriting_prompts.get("story_generation", {})
-    return story_generation.get("story_opening", {}).get(key, {})
+# backend/story_tracker.py - Story-specific completion analysis
+class StoryLatencyTracker:
+    def start_story(...)                    # Story session initialization
+    def log_exchange(...)                   # Individual exchange timing
+    def complete_story(...)                 # Story completion analysis
+
+# backend/app.py - HTTP handling and FastAPI setup only
+from latency_logger import LatencyLogger
+from story_tracker import StoryLatencyTracker
+latency_logger = LatencyLogger()            # Global instance
+story_tracker = StoryLatencyTracker()       # Global instance
 ```
 
-**File Organization Pattern**:
-- `storywriting-prompts.json` - System prompts, story generation, narrative enhancement, assessment
-- `character-design-prompts.json` - Character naming and description templates
-- `shared-prompts.json` - Cross-modal vocabulary prompts
-- Legacy files removed after successful consolidation
+**Refactoring Impact**:
+- **Reduced app.py size**: From 3,364 lines to 3,185 lines (179 lines removed, 5.3% reduction)
+- **Better separation of concerns**: HTTP handling separated from logging logic
+- **Enhanced reusability**: Logging classes can be imported by other modules
+- **Improved maintainability**: Each class can be tested and modified independently
+- **Zero functional changes**: All existing behavior preserved
 
-**Critical Implementation Requirements**:
-1. **Consistent Field Names**: All prompts use `"prompt_template"` (not `"template"`)
-2. **Sentence Count Alignment**: All templates specify "1-3 sentences" consistently  
-3. **Backwards Compatibility**: Legacy fallbacks during transition period
-4. **Enhanced Access**: ContentManager handles both consolidated and legacy formats
+### Enhanced Educational Logging System Pattern (LATEST ARCHITECTURE - Complete Implementation)
+
+**Pattern**: Layered Integration - Extending existing latency logging with comprehensive educational metadata
+- **Why**: Enable systematic evaluation of AI tutoring effectiveness through detailed interaction tracking
+- **Implementation**: Three-week phased approach with session management, classification, and metadata enrichment
+- **Result**: Complete educational interaction logging without disrupting existing infrastructure
+
+**Educational Logging Architecture**:
+```python
+# Session Management with Educational Context
+class SessionData(BaseModel):
+    # Educational Logging Session Management Fields
+    session_id: Optional[str] = None          # UUID for session tracking
+    session_start: Optional[datetime] = None  # Session start timestamp  
+    last_activity: Optional[datetime] = None  # Last interaction for timeout
+    turn_id: int = 0                         # Sequential interaction counter
+    current_story_id: Optional[str] = None    # Current story UUID
+    current_funfact_id: Optional[str] = None  # Current fun fact UUID
+    story_history: List[str] = []            # All story IDs in session
+    funfact_history: List[str] = []          # All fun fact IDs in session
+
+# Educational Data Collection
+def collect_educational_data(session_data, response, mode, user_input, llm_call_types):
+    # Module classification based on LLM call types and response analysis
+    module = classify_interaction_module(session_data, response, mode, llm_call_types)
+    
+    # Prompt version tracking with actual template previews
+    prompt_versions = get_relevant_prompt_versions(module, mode)
+    
+    # Comprehensive educational context capture
+    educational_context = extract_educational_context(session_data, mode)
+    
+    # Vocabulary-specific interaction data when applicable
+    if module == "vocabulary":
+        vocab_data = extract_vocabulary_interaction_data(response.vocabQuestion, user_input)
+```
+
+**Module Classification System**:
+```python
+def classify_interaction_module(session_data, response, mode, llm_call_types):
+    # 1. VOCABULARY - Check if response has vocab question
+    if hasattr(response, 'vocabQuestion') and response.vocabQuestion:
+        return 'vocabulary'
+    # 2. LLM_FEEDBACK - Check for grammar feedback LLM calls
+    if 'grammar_feedback' in llm_call_types:
+        return 'llm_feedback'
+    # 3. CHARACTER_DESIGN - Check design phase status
+    if session_data.designPhase and not session_data.designComplete:
+        return 'character_design'
+    # 4. FUN_FACT - Check mode
+    if mode == "funfacts":
+        return 'fun_fact'
+    # 5. STORYWRITING_NARRATIVE - Default for story mode
+    return 'storywriting_narrative'
+```
+
+**Enhanced Prompt Version Tracking**:
+```python
+def extract_prompt_template_previews(prompt_files, module):
+    # Extract actual prompt templates used based on interaction type
+    if module == "vocabulary":
+        # Show actual vocabulary question generation template
+        template = shared_content["vocabulary_system"]["question_generation"]["prompt_template"]
+    elif module == "character_design":  
+        # Show character naming template
+        template = char_content["naming_prompts"]["character"]["prompt_template"]
+    # Returns: {"definition": "path.to.template", "template_preview": "actual text..."}
+```
+
+**Educational Context Capture**:
+```python
+def extract_educational_context(session_data, mode):
+    return {
+        "current_topic": session_data.topic,
+        "story_progress": {"current_step": session_data.currentStep, "is_complete": session_data.isComplete},
+        "vocabulary_state": {"questions_asked": session_data.vocabularyPhase.questionsAsked},
+        "design_state": {"current_phase": session_data.designPhase, "design_complete": session_data.designComplete},
+        "story_quality": {"character_growth_score": session_data.characterGrowthScore},
+        "age_band": "2nd-3rd_grade"
+    }
+```
+
+**Comprehensive Log Output Example**:
+```json
+{
+  "session_id": "uuid-123", "turn_id": 1, "module": "vocabulary",
+  "user_input": "Tell me about space", 
+  "ai_output": "Did you know that the **potential** of space is absolutely **extraordinary**?",
+  "vocabulary_interaction": {
+    "target_word": "potential", "is_correct": true, "user_selected_answer": "A"
+  },
+  "prompt_versions": {
+    "versions": {"shared_prompts": "1.0.0"},
+    "previews": {"vocabulary_question_generation": {"template_preview": "Create a multiple choice question..."}}
+  },
+  "educational_context": {
+    "current_topic": "space", "vocabulary_state": {"questions_asked": 0}, "age_band": "2nd-3rd_grade"
+  }
+}
+```
+
+**Educational Impact**:
+- **Complete interaction tracking** - Every educational exchange captured with rich metadata
+- **Prompt version control** - Track exactly which prompt templates were used for reproducibility
+- **Assessment capability** - Detailed vocabulary interaction analysis with correctness scoring
+- **Context preservation** - Full educational state captured for longitudinal analysis
+
+### Centralized JSON Prompt Management Pattern (Previous Major Implementation)
+
+**Pattern**: Two-tier JSON-based prompt management with ContentManager → PromptManager architecture
+- **Why**: Scattered hardcoded prompts made maintenance difficult and caused production bugs
+- **Discovery**: Complete consolidation required systematic replacement of ~150 lines of hardcoded prompts
+- **Implementation**: ContentManager loads JSON, PromptManager provides business logic and formatting
+
+**Core Architecture Pattern**:
+```python
+# Tier 1: ContentManager loads JSON and provides template access
+class ContentManager:
+    def get_prompt_template(self, category: str, key: str) -> str:
+        # Navigate JSON structure: storywriting_prompts.basic_prompts.story_continuation_simple
+        return template_data.get("prompt_template", f"[Missing: {category}.{key}]")
+
+# Tier 2: PromptManager uses ContentManager with business logic
+class PromptManager:
+    def get_story_continuation_prompt(self, context: str = "") -> str:
+        try:
+            template = content_manager.get_prompt_template("basic_prompts", "story_continuation_simple")
+            return template.format(context=context)  # Variable substitution
+        except Exception as e:
+            return "fallback prompt..."  # Educational continuity preserved
+```
+
+**Complete JSON Architecture**:
+- **storywriting-prompts.json** - All story mode prompts (system, generation, assessment, feedback)
+- **character-design-prompts.json** - Character naming and description templates
+- **shared-prompts.json** - Cross-modal vocabulary system prompts
+- **Deleted files**: shared/ directory, vocab.csv, legacy cached modules
+
+**Implementation Pattern Requirements**:
+1. **Consistent Key Names**: All JSON uses `"prompt_template"` (fixed llm_provider.py key mismatches)
+2. **Error Handling**: Try/catch with educational fallbacks for reliability
+3. **Variable Substitution**: PromptManager handles `.format()` with context variables
+4. **Business Logic Preserved**: Complex functions (conflict selection, assessment) maintain logic
+5. **Educational Continuity**: No functionality lost during consolidation
+
+**Key Architectural Decision**: Focused on prompt consolidation rather than API call reduction, prioritizing maintainability and educational reliability over performance optimization.
 
 ### Enhanced Entity Design Phase Pattern (Previous Breakthrough - Phase 17)
 

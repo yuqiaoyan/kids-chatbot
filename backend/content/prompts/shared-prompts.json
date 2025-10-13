@@ -4,8 +4,11 @@
     "target_audience": "2nd-3rd grade elementary students", 
     "usage_scope": "Cross-modal vocabulary learning and assessment",
     "usage_notes": "These prompts affect vocabulary learning in both story writing and facts exploration. Test changes in both modes.",
-    "last_updated": "2025-01-08",
-    "version": "1.0"
+    "last_updated": "2025-01-09",
+    "version": "1.0.0",
+    "changelog": {
+      "1.0.0": "Initial consolidated version - centralized vocabulary prompts for both story and facts modes"
+    }
   },
   
   "vocabulary_system": {

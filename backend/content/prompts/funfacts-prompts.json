@@ -4,7 +4,10 @@
     "target_audience": "2nd-3rd grade elementary students",
     "educational_goals": ["Knowledge expansion", "Vocabulary building", "Curiosity development"],
     "last_updated": "2025-01-09",
-    "version": "1.0",
+    "version": "1.0.0",
+    "changelog": {
+      "1.0.0": "Initial consolidated version - unified all fun facts prompts into structured JSON format"
+    },
     "usage_notes": "Modify fact templates to change how educational content is generated. Add new topics by expanding topic_examples."
   },
 

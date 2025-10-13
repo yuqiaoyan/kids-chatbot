@@ -4,8 +4,11 @@
     "target_audience": "2nd-3rd grade elementary students",
     "educational_goals": ["Creative writing", "Vocabulary expansion", "Character development", "Grammar improvement"],
     "usage_notes": "Edit templates to change story generation behavior. Variables in {brackets} are automatically replaced.",
-    "last_updated": "2025-01-08",
-    "version": "1.0"
+    "last_updated": "2025-01-09",
+    "version": "1.0.0",
+    "changelog": {
+      "1.0.0": "Initial consolidated version - combined all storywriting prompts into unified JSON structure"
+    }
   },
   
   "system_prompts": {
@@ -218,7 +221,7 @@
     },
     "basic_story_continuation": {
       "description": "Continue existing story with vocabulary integration",
-      "prompt_template": "Continue the story about {topic}. Previous context: {context}. \n\nWrite a paragraph that is 2-4 sentences long using vocabulary suitable for a strong 2nd grader or 3rd grader. Then invite the child to continue the story without giving them any options. Keep this a short story - try to end it before it goes over 300 words total. DO NOT include vocabulary questions - those will be handled separately.",
+      "prompt_template": "Continue the story about {topic}. Previous context: {context}. \n\nWrite a paragraph that is 2-4 sentences long using vocabulary suitable for a strong 2nd grader or 3rd grader. Then invite the child to continue the story. DO NOT include vocabulary questions - those will be handled separately.",
       "variables": ["topic", "context"],
       "usage": "Used for basic story continuation with topic and context",
       "source": "Currently hardcoded in prompt_manager.py:get_continue_story_prompt()"
@@ -247,7 +250,7 @@
   
   "grammar_feedback": {
     "description": "Provide encouraging grammar suggestions for student writing",
-    "prompt_template": "As a friendly English tutor for elementary students, analyze this text: \"{user_text}\"\n\nIf there are any grammatical errors or if this is an incomplete sentence, explain what a better written sentence would be. If there is better vocabulary to use, suggest it.\n\nIMPORTANT: Always include a specific example of a better sentence, especially for incomplete sentences.\n\nIf the grammar is correct and complete, return \"CORRECT\".\nIf there's a suggestion, provide it in this format: \"You could make that sentence even better by saying '[improved version]'. [Brief explanation].\"\n\nExamples:\n- For \"practiced.\" → \"You could make that sentence even better by saying 'They practiced hard for the next game.' This gives us more detail about what happened!\"\n- For \"sara has curly hair\" → \"Great job, that's a nice start! You could add more details like 'Sara has curly hair and beautiful green eyes.' This makes the description more vivid!\"\n- For \"He go to the store.\" → \"You could make that sentence even better by saying 'He went to the store.' We use 'went' for past actions!\"\n\nAlways provide encouraging feedback and specific examples to help young learners improve their writing.",
+    "prompt_template": "As a friendly English tutor for elementary students, analyze this text: \"{user_text}\"\n\nIf there are any grammatical errors or if this is an incomplete sentence, explain what a better written sentence would be. If there is better vocabulary to use, suggest it.\n\nIMPORTANT: Always include a specific example of a better sentence, especially for incomplete sentences.\n\nIf the grammar is correct and complete, write positive feedback.\nIf there's a suggestion, provide it in this format: \"You could make that sentence even better by saying '[improved version]'. [Brief explanation].\"\n\nExamples:\n- For \"practiced.\" → \"You could make that sentence even better by saying 'They practiced hard for the next game.' This gives us more detail about what happened!\"\n- For \"sara has curly hair\" → \"Great job, that's a nice start! You could add more details like 'Sara has curly hair and beautiful green eyes.' This makes the description more vivid!\"\n- For \"He go to the store.\" → \"You could make that sentence even better by saying 'He went to the store.' We use 'went' for past actions!\"",
     "variables": ["user_text"],
     "response_patterns": {
       "correct_grammar": "CORRECT",

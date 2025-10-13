@@ -1,5 +1,5 @@
 # Byte-compiled / optimized / DLL files
-__pycache__/
+__pycache__
 *.py[cod]
 *.pyo
 *.pyd
@@ -53,3 +53,5 @@ design/
 # Log files
 logs/
 backend/logs/
+backend/__pycache__/
+backend/evals/

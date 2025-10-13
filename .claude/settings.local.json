@@ -20,7 +20,9 @@
       "Bash(pip install:*)",
       "Bash(move:*)",
       "Bash(mv:*)",
-      "Bash(rm:*)"
+      "Bash(rm:*)",
+      "Bash(uvicorn:*)",
+      "Bash(curl:*)"
     ],
     "deny": []
   }
